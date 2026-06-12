@@ -1,0 +1,268 @@
+# ============================================================
+# Louisville Golf Tee Time Advisor — Dash App
+# Author: Leo Brewer
+# Run with: python golf_dashboard.py
+# Then open: http://localhost:8050
+# ============================================================
+
+import pandas as pd
+from dash import Dash, dcc, html, dash_table
+from dash.dependencies import Input, Output
+import plotly.express as px
+import plotly.graph_objects as go
+
+# ── Load data ─────────────────────────────────────────────────
+df = pd.read_csv("golf_weather_analytics.csv")
+df["forecast_time"] = pd.to_datetime(df["forecast_time"])
+
+# ── Summary stats for KPI cards ───────────────────────────────
+avg_score     = round(df["playability_score"].mean(), 1)
+avg_cancel    = round(df["cancellation_probability"].mean(), 1)
+best_row      = df.loc[df["playability_score"].idxmax()]
+best_tee_time = best_row["forecast_time"].strftime("%I:%M %p")
+best_tee_date = best_row["forecast_time"].strftime("%b %d")
+top_round     = df["recommended_round"].mode()[0]
+
+date_options = [
+    {"label": d.strftime("%b %d, %Y"), "value": str(d.date())}
+    for d in sorted(df["forecast_time"].dt.normalize().unique())
+]
+default_date = str(df["forecast_time"].dt.date.min())
+
+def score_color(score):
+    if score >= 85: return "#2E7D32"
+    if score >= 60: return "#F9A825"
+    return "#C62828"
+
+# ── App init ──────────────────────────────────────────────────
+app = Dash(__name__, suppress_callback_exceptions=True)
+
+CARD = {
+    "padding": "18px 22px", "borderRadius": "12px", "textAlign": "center",
+    "flex": "1", "margin": "0 8px", "boxShadow": "0 2px 8px rgba(0,0,0,.10)"
+}
+
+# ── Layout ────────────────────────────────────────────────────
+app.layout = html.Div(style={"backgroundColor": "#F1F8E9", "padding": "24px", "fontFamily": "Arial, sans-serif"}, children=[
+
+    # Header
+    html.Div(style={"backgroundColor": "#1B5E20", "borderRadius": "14px",
+                    "padding": "22px", "marginBottom": "24px", "textAlign": "center"}, children=[
+        html.H1("⛳ Louisville Golf Tee Time Advisor",
+                style={"color": "white", "margin": 0, "fontSize": "28px"}),
+        html.P("Live weather-powered playability scores · Louisville, KY",
+               style={"color": "#A5D6A7", "margin": "6px 0 0"})
+    ]),
+
+    # KPI Cards
+    html.Div(style={"display": "flex", "marginBottom": "24px"}, children=[
+        html.Div(style={**CARD, "backgroundColor": "#E8F5E9"}, children=[
+            html.Div("⛳", style={"fontSize": "28px"}),
+            html.H4("Avg Playability", style={"margin": "4px 0", "color": "#555"}),
+            html.H2(f"{avg_score}", style={"margin": 0, "color": score_color(avg_score)})
+        ]),
+        html.Div(style={**CARD, "backgroundColor": "#FFF3E0"}, children=[
+            html.Div("🌧", style={"fontSize": "28px"}),
+            html.H4("Avg Cancel Risk", style={"margin": "4px 0", "color": "#555"}),
+            html.H2(f"{avg_cancel}%", style={"margin": 0, "color": "#E65100"})
+        ]),
+        html.Div(style={**CARD, "backgroundColor": "#E3F2FD"}, children=[
+            html.Div("🏌️", style={"fontSize": "28px"}),
+            html.H4("Top Round Type", style={"margin": "4px 0", "color": "#555"}),
+            html.H2(top_round, style={"margin": 0, "color": "#1565C0", "fontSize": "20px"})
+        ]),
+        html.Div(style={**CARD, "backgroundColor": "#DFF5E1"}, children=[
+            html.Div("🏆", style={"fontSize": "28px"}),
+            html.H4("Best Tee Time", style={"margin": "4px 0", "color": "#555"}),
+            html.H2(best_tee_time, style={"margin": 0, "color": "#1B5E20"}),
+            html.P(f"{best_tee_date} · Score {int(best_row['playability_score'])}",
+                   style={"margin": "2px 0 0", "fontSize": "13px", "color": "#666"})
+        ]),
+    ]),
+
+    # Filters
+    html.Div(style={"backgroundColor": "white", "borderRadius": "12px", "padding": "20px",
+                    "marginBottom": "24px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"}, children=[
+        html.H3("🔎 Filters", style={"margin": "0 0 16px"}),
+        html.Div(style={"display": "flex", "gap": "32px", "alignItems": "flex-end"}, children=[
+            html.Div([
+                html.Label("Forecast Date", style={"fontWeight": "bold"}),
+                dcc.Dropdown(id="date-filter", options=date_options, value=default_date,
+                             clearable=False, style={"width": "200px"})
+            ]),
+            html.Div([
+                html.Label("Round Type", style={"fontWeight": "bold"}),
+                dcc.Dropdown(id="round-filter",
+                             options=[{"label": "All", "value": "All"},
+                                      {"label": "18 Holes", "value": "18 Holes"},
+                                      {"label": "9 Holes", "value": "9 Holes"}],
+                             value="All", clearable=False, style={"width": "160px"})
+            ]),
+            html.Div(style={"flex": "1"}, children=[
+                html.Label(id="slider-label", style={"fontWeight": "bold"}),
+                dcc.Slider(id="score-slider", min=0, max=100, step=5, value=50,
+                           marks={i: str(i) for i in range(0, 101, 10)},
+                           tooltip={"placement": "bottom", "always_visible": False})
+            ])
+        ])
+    ]),
+
+    # Top 5 table
+    html.Div(style={"backgroundColor": "white", "borderRadius": "12px", "padding": "20px",
+                    "marginBottom": "24px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"}, children=[
+        html.H3("🏆 Top 5 Recommended Tee Times"),
+        dash_table.DataTable(
+            id="top5-table", page_size=5,
+            style_header={"backgroundColor": "#1B5E20", "color": "white", "fontWeight": "bold"},
+            style_cell={"textAlign": "center", "padding": "8px"},
+            style_data_conditional=[
+                {"if": {"filter_query": "{Playability} >= 85"}, "backgroundColor": "#E8F5E9"},
+                {"if": {"filter_query": "{Playability} < 60"}, "backgroundColor": "#FFEBEE"},
+            ]
+        )
+    ]),
+
+    # Daily forecast table (dynamic)
+    html.Div(id="daily-table-container", style={"marginBottom": "24px"}),
+
+    # Charts row
+    html.Div(style={"display": "flex", "gap": "20px", "marginBottom": "24px"}, children=[
+        html.Div(style={"flex": "1", "backgroundColor": "white", "borderRadius": "12px",
+                        "padding": "16px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"},
+                 children=[dcc.Graph(id="playability-chart", config={"displayModeBar": False})]),
+        html.Div(style={"flex": "1", "backgroundColor": "white", "borderRadius": "12px",
+                        "padding": "16px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"},
+                 children=[dcc.Graph(id="cancellation-chart", config={"displayModeBar": False})])
+    ]),
+
+    # Wind chart
+    html.Div(style={"backgroundColor": "white", "borderRadius": "12px", "padding": "16px",
+                    "marginBottom": "24px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"},
+             children=[dcc.Graph(id="wind-chart", config={"displayModeBar": False})]),
+
+    # Footer
+    html.Div(style={"textAlign": "center", "color": "#888", "fontSize": "13px", "paddingTop": "8px"},
+             children=["Data: Open-Meteo API · Louisville, KY · Built by Leo Brewer"])
+])
+
+
+# ── Callbacks ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("slider-label", "children"),
+    Input("score-slider", "value")
+)
+def update_slider_label(val):
+    return f"Min Playability Score: {val}"
+
+
+@app.callback(
+    [Output("playability-chart", "figure"),
+     Output("cancellation-chart", "figure"),
+     Output("wind-chart", "figure"),
+     Output("top5-table", "data"),
+     Output("top5-table", "columns"),
+     Output("daily-table-container", "children")],
+    [Input("date-filter", "value"),
+     Input("round-filter", "value"),
+     Input("score-slider", "value")]
+)
+def update_all(selected_date, selected_round, min_score):
+
+    day = pd.to_datetime(selected_date).date()
+    filt = df[df["forecast_time"].dt.date == day].copy()
+
+    if selected_round != "All":
+        filt = filt[filt["recommended_round"] == selected_round]
+
+    filt = filt[filt["playability_score"] >= min_score]
+
+    # Playability line chart
+    fig1 = px.line(filt, x="forecast_time", y="playability_score",
+                   title="⛳ Playability Score by Hour",
+                   labels={"forecast_time": "Time", "playability_score": "Score"})
+    fig1.update_traces(mode="lines+markers", line=dict(color="#2E8B57", width=3), marker=dict(size=7))
+    fig1.add_hrect(y0=85, y1=100, fillcolor="#C8E6C9", opacity=0.3, line_width=0,
+                   annotation_text="Excellent", annotation_position="top right")
+    fig1.add_hrect(y0=60, y1=85, fillcolor="#FFF9C4", opacity=0.3, line_width=0,
+                   annotation_text="Good", annotation_position="top right")
+    fig1.add_hrect(y0=0,  y1=60, fillcolor="#FFCDD2", opacity=0.3, line_width=0,
+                   annotation_text="Poor", annotation_position="top right")
+    fig1.update_layout(template="plotly_white", title_x=0.5,
+                       yaxis=dict(range=[0, 105]), margin=dict(t=50, b=40))
+
+    # Cancellation bar chart
+    colors = ["#C62828" if p > 50 else "#F9A825" if p > 20 else "#2E7D32"
+              for p in filt["cancellation_probability"]]
+    fig2 = px.bar(filt, x="forecast_time", y="cancellation_probability",
+                  title="🌧 Cancellation Risk by Hour",
+                  labels={"forecast_time": "Time", "cancellation_probability": "Risk (%)"})
+    fig2.update_traces(marker_color=colors)
+    fig2.add_hline(y=50, line_dash="dash", line_color="#C62828",
+                   annotation_text="High Risk Threshold")
+    fig2.update_layout(template="plotly_white", title_x=0.5,
+                       yaxis=dict(range=[0, 105]), margin=dict(t=50, b=40))
+
+    # Wind speed chart
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(
+        x=filt["forecast_time"], y=filt["wind_speed"],
+        fill="tozeroy", mode="lines+markers",
+        line=dict(color="#1565C0", width=2),
+        fillcolor="rgba(21,101,192,0.15)",
+        name="Wind Speed (km/h)"
+    ))
+    fig3.add_hline(y=20, line_dash="dash", line_color="#E65100",
+                   annotation_text="High Wind Threshold (20 km/h)")
+    fig3.update_layout(title="💨 Wind Speed by Hour", template="plotly_white", title_x=0.5,
+                       xaxis_title="Time", yaxis_title="Wind Speed (km/h)",
+                       margin=dict(t=50, b=40))
+
+    # Top 5 table
+    top5 = filt.sort_values("playability_score", ascending=False).head(5).copy()
+    top5["Tee Time"]      = top5["forecast_time"].dt.strftime("%I:%M %p")
+    top5["Playability"]   = top5["playability_score"].astype(int)
+    top5["Cancel Risk %"] = top5["cancellation_probability"].astype(int)
+    top5["Wind (km/h)"]   = top5["wind_speed"].round(1)
+    top5["Round"]         = top5["recommended_round"]
+    display_cols = ["Tee Time", "Playability", "Cancel Risk %", "Wind (km/h)", "Round"]
+    top5_cols = [{"name": c, "id": c} for c in display_cols]
+
+    # Full daily table
+    daily = filt.copy()
+    daily["Tee Time"]      = daily["forecast_time"].dt.strftime("%I:%M %p")
+    daily["Temp (°C)"]     = daily["temperature"].round(1)
+    daily["Rain Prob %"]   = daily["rain_probability"].astype(int)
+    daily["Wind (km/h)"]   = daily["wind_speed"].round(1)
+    daily["Playability"]   = daily["playability_score"].astype(int)
+    daily["Cancel Risk %"] = daily["cancellation_probability"].astype(int)
+    daily["Round"]         = daily["recommended_round"]
+    show = ["Tee Time", "Temp (°C)", "Rain Prob %", "Wind (km/h)",
+            "Playability", "Cancel Risk %", "Round"]
+
+    table = html.Div(
+        style={"backgroundColor": "white", "borderRadius": "12px",
+               "padding": "20px", "boxShadow": "0 2px 8px rgba(0,0,0,.08)"},
+        children=[
+            html.H3(f"📅 Full Forecast — {pd.to_datetime(selected_date).strftime('%B %d, %Y')}"),
+            dash_table.DataTable(
+                columns=[{"name": c, "id": c} for c in show],
+                data=daily[show].to_dict("records"),
+                sort_action="native",
+                style_header={"backgroundColor": "#1B5E20", "color": "white", "fontWeight": "bold"},
+                style_cell={"textAlign": "center", "padding": "8px"},
+                style_data_conditional=[
+                    {"if": {"filter_query": "{Playability} >= 85"}, "backgroundColor": "#E8F5E9"},
+                    {"if": {"filter_query": "{Playability} < 60"}, "backgroundColor": "#FFEBEE"},
+                ],
+                page_size=12
+            )
+        ]
+    )
+
+    return fig1, fig2, fig3, top5[display_cols].to_dict("records"), top5_cols, table
+
+
+# ── Run ───────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app.run(debug=True, port=8050)
